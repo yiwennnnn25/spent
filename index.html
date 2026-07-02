@@ -102,6 +102,28 @@
   .setrow input{flex:1;background:var(--card);border:1px solid var(--line);color:var(--ink);
     border-radius:10px;padding:10px;font-size:14px}
   .mini{font-size:11px;color:var(--ink3);text-align:center;margin-top:8px;line-height:1.6}
+  .last{position:fixed;left:50%;bottom:calc(78px + var(--pad));transform:translateX(-50%) translateY(16px);
+    width:calc(100% - 28px);max-width:492px;background:var(--card);border:1px solid var(--line);
+    border-radius:16px;padding:10px 12px;opacity:0;pointer-events:none;transition:.25s;z-index:40;
+    box-shadow:0 6px 20px rgba(60,45,90,.22)}
+  .last.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto}
+  .ltop{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--ink)}
+  .ltop .x{margin-left:auto}
+  .lchips{display:flex;gap:6px;margin-top:8px;align-items:center}
+  .lchip{border:1px solid var(--line);background:var(--card2);border-radius:14px;padding:6px 12px;
+    font-size:12px;font-weight:600;color:var(--ink);cursor:pointer}
+  .lchip.n-on{background:var(--need-bg);color:var(--need);border-color:transparent}
+  .lchip.w-on{background:var(--want-bg);color:var(--want);border-color:transparent}
+  .lhint{margin-left:auto;font-size:11px;color:var(--ink3)}
+  .pace{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:11px 13px;
+    font-size:13px;color:var(--ink2);margin-bottom:4px}
+  .pace b{color:var(--need)}
+  .pace.over b{color:var(--blush)}
+  .heat{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin:6px 0 10px}
+  .heat div{height:30px;border-radius:7px;background:var(--card2);display:flex;align-items:center;
+    justify-content:center;font-size:10px;color:var(--ink2)}
+  .up{color:var(--blush);font-size:11px;font-weight:700}
+  .dn{color:var(--need);font-size:11px;font-weight:700}
   .toast{position:fixed;left:50%;bottom:calc(82px + var(--pad));transform:translateX(-50%) translateY(20px);
     background:var(--ink);color:#fff;font-weight:700;font-size:13px;padding:10px 18px;border-radius:22px;
     opacity:0;transition:.25s;pointer-events:none;z-index:40;box-shadow:0 6px 20px rgba(60,45,90,.22)}
@@ -137,11 +159,12 @@
   <div class="foot">
     <button onclick="undoLast()">↩ Undo</button>
     <button onclick="openSheet('recent')">Recent</button>
-    <button onclick="openSheet('break')">Breakdown</button>
+    <button onclick="openSheet('break')">Insights</button>
     <button onclick="openSheet('set')">⚙</button>
   </div>
 
   <div class="sheet" id="sheet"><div id="sheetBody"></div></div>
+  <div class="last" id="last"></div>
   <div class="toast" id="toast"></div>
 
 <script>
@@ -273,38 +296,98 @@ function press(t){
   }
   renderAmt();
 }
-document.getElementById('methodSeg').addEventListener('click',function(e){if(e.target.dataset.v){cfg.method=e.target.dataset.v;save(CKEY,cfg);renderMethods();}});
-document.getElementById('needSeg').addEventListener('click',function(e){if(e.target.dataset.v){cfg.need=e.target.dataset.v;save(CKEY,cfg);renderNeed();}});
+var manualSel={method:false,need:false}; // user touched a toggle since last log → their pick beats the learned default
+document.getElementById('methodSeg').addEventListener('click',function(e){if(e.target.dataset.v){cfg.method=e.target.dataset.v;manualSel.method=true;save(CKEY,cfg);renderMethods();}});
+document.getElementById('needSeg').addEventListener('click',function(e){if(e.target.dataset.v){cfg.need=e.target.dataset.v;manualSel.need=true;save(CKEY,cfg);renderNeed();}});
+
+function catDefault(name){ // majority method/need from this category's last 20 logs; needs ≥3 logs and a 70% majority
+  var m={},n={},cnt=0;
+  for(var i=entries.length-1;i>=0&&cnt<20;i--){
+    var e=entries[i]; if(e.cat!==name) continue;
+    cnt++; m[e.method]=(m[e.method]||0)+1; n[e.need]=(n[e.need]||0)+1;
+  }
+  if(cnt<3) return null;
+  function top(o){var b=null;for(var k in o)if(b===null||o[k]>o[b])b=k;return b;}
+  var tm=top(m), tn=top(n);
+  return {
+    method:(m[tm]>=cnt*0.7&&cfg.methods.indexOf(tm)>=0)?tm:null,
+    need:(n[tn]>=cnt*0.7)?tn:null
+  };
+}
 
 function logExpense(cat,el){
   var v=parseFloat(amt);
   if(!v||v<=0){ toast('Enter an amount first'); return; }
   var noteEl=document.getElementById('note'); var note=(noteEl&&noteEl.value||'').trim();
+  var d=catDefault(cat.n)||{};
+  var useM=(!manualSel.method&&d.method)?d.method:cfg.method;
+  var useN=(!manualSel.need&&d.need)?d.need:cfg.need;
   var firstToday = !entries.some(function(x){return entryDay(x)===todayKey();});
-  entries.push({amt:v, cat:cat.n, e:cat.e, method:cfg.method, need:cfg.need, note:note, ts:new Date().toISOString()});
+  var entry={amt:v, cat:cat.n, e:cat.e, method:useM, need:useN, note:note, ts:new Date().toISOString()};
+  entries.push(entry);
   save(KEY,entries);
+  if(useM!==cfg.method||useN!==cfg.need){cfg.method=useM;cfg.need=useN;save(CKEY,cfg);renderMethods();renderNeed();}
+  manualSel.method=false; manualSel.need=false;
   amt=''; renderAmt(); if(noteEl){noteEl.value='';noteEl.blur();} renderTotals(); renderQuick();
   el.classList.add('flash'); setTimeout(function(){el.classList.remove('flash');},220);
   burst(cat.e);
   if(navigator.vibrate) navigator.vibrate(15);
-  var msg='RM '+fmt2(v)+' · '+cat.n+' · '+cfg.method;
-  if(firstToday && streak()>=2) msg+=' · 🔥 day '+streak();
-  toast(msg);
+  showLast(entry, firstToday&&streak()>=2 ? ' · 🔥 day '+streak() : '');
 }
 function quickLog(it){
+  var d=catDefault(it.cat)||{};
+  var useM=(!manualSel.method&&d.method)?d.method:cfg.method;
   var firstToday = !entries.some(function(x){return entryDay(x)===todayKey();});
-  entries.push({amt:it.amt, cat:it.cat, e:it.e, method:cfg.method, need:it.need, note:'', ts:new Date().toISOString()});
-  save(KEY,entries); renderTotals(); renderQuick();
+  var entry={amt:it.amt, cat:it.cat, e:it.e, method:useM, need:it.need, note:'', ts:new Date().toISOString()};
+  entries.push(entry);
+  save(KEY,entries);
+  if(useM!==cfg.method){cfg.method=useM;save(CKEY,cfg);renderMethods();}
+  manualSel.method=false; manualSel.need=false;
+  renderTotals(); renderQuick();
   burst(it.e);
   if(navigator.vibrate) navigator.vibrate(15);
-  var msg='RM '+fmt2(it.amt)+' · '+it.cat+' · '+cfg.method;
-  if(firstToday && streak()>=2) msg+=' · 🔥 day '+streak();
-  toast(msg);
+  showLast(entry, firstToday&&streak()>=2 ? ' · 🔥 day '+streak() : '');
 }
 function undoLast(){
   if(!entries.length){toast('Nothing to undo');return;}
-  var e=entries.pop(); save(KEY,entries); renderTotals(); renderQuick();
+  var e=entries.pop(); save(KEY,entries); hideLast(); renderTotals(); renderQuick();
   toast('Removed RM '+fmt2(e.amt)+' · '+e.cat);
+}
+
+var lastT=null, lastRef=null, lastExtra='';
+function showLast(e,extra){
+  lastRef=e; lastExtra=extra||'';
+  renderLast();
+  document.getElementById('last').classList.add('show');
+  armLast();
+}
+function armLast(){clearTimeout(lastT);lastT=setTimeout(hideLast,6000);}
+function hideLast(){document.getElementById('last').classList.remove('show');lastRef=null;}
+function renderLast(){
+  if(!lastRef)return;
+  var e=lastRef;
+  document.getElementById('last').innerHTML=
+    '<div class="ltop"><span>'+e.e+'</span><b class="num">RM '+fmt2(e.amt)+'</b><span>· '+esc(e.cat)+lastExtra+'</span>'+
+    '<button class="x" onclick="hideLast()">✕</button></div>'+
+    '<div class="lchips">'+
+    '<button class="lchip '+(e.need==='need'?'n-on':'w-on')+'" onclick="lastFlipNeed()">'+(e.need==='need'?'Need':'Want')+' ⇄</button>'+
+    '<button class="lchip" onclick="lastCycleMethod()">'+esc(e.method)+' ⇄</button>'+
+    '<span class="lhint">tap to fix</span></div>';
+}
+function lastFlipNeed(){
+  if(!lastRef)return;
+  lastRef.need = lastRef.need==='need'?'want':'need';
+  save(KEY,entries);
+  cfg.need=lastRef.need; save(CKEY,cfg); renderNeed();
+  renderQuick(); renderLast(); armLast();
+}
+function lastCycleMethod(){
+  if(!lastRef||!cfg.methods.length)return;
+  var i=cfg.methods.indexOf(lastRef.method);
+  lastRef.method=cfg.methods[(i+1)%cfg.methods.length];
+  save(KEY,entries);
+  cfg.method=lastRef.method; save(CKEY,cfg); renderMethods();
+  renderLast(); armLast();
 }
 
 var toastT;
@@ -314,6 +397,7 @@ function toast(msg){
 }
 
 function openSheet(kind){
+  hideLast();
   var body=document.getElementById('sheetBody');
   if(kind==='recent') body.innerHTML=recentHtml();
   else if(kind==='break') body.innerHTML=breakHtml();
@@ -336,23 +420,75 @@ function recentHtml(){
   }).join('') || '<div class="mini">No expenses yet. Type an amount and tap a category.</div>';
   return '<h2>Recent<button class="x" onclick="closeSheet()">✕</button></h2>'+rows;
 }
-function delEntry(i){ if(i>=0){entries.splice(i,1);save(KEY,entries);renderTotals();renderQuick();openSheet('recent');} }
+function delEntry(i){ if(i>=0){entries.splice(i,1);save(KEY,entries);hideLast();renderTotals();renderQuick();openSheet('recent');} }
 
 function breakHtml(){
-  var mo=thisMonth(), tot=mo.reduce(function(s,e){return s+e.amt;},0);
-  function group(field){
-    var g={}; mo.forEach(function(e){g[e[field]]=(g[e[field]]||0)+e.amt;});
-    return Object.keys(g).sort(function(a,b){return g[b]-g[a];}).map(function(k){
-      return '<div class="row"><div class="l">'+k+'</div><b class="num">RM '+fmt(g[k])+'</b></div>';}).join('')||'<div class="mini">—</div>';
+  function sum(s,e){return s+e.amt;}
+  var mo=thisMonth(), tot=mo.reduce(sum,0);
+  var now=new Date(), day=now.getDate(), dim=new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
+  var proj=tot/day*dim;
+  var pd=new Date(now.getFullYear(),now.getMonth()-1,1), pKey=ymKey(pd);
+  var pName=pd.toLocaleDateString('en-GB',{month:'short'});
+  var pm=entries.filter(function(e){return entryMonth(e)===pKey;});
+  var pTot=pm.reduce(sum,0);
+  var pToDate=pm.filter(function(e){return +entryDay(e).slice(8)<=day;}).reduce(sum,0);
+
+  var pace='<div class="pace num'+(cfg.budget>0&&proj>cfg.budget?' over':'')+'">Day '+day+' of '+dim+
+    ' · on pace for <b>RM '+fmt(proj)+'</b>'+(cfg.budget>0?' of RM '+fmt(cfg.budget):'')+'</div>';
+
+  var vs='';
+  if(pToDate>0){
+    var dl=Math.round((tot-pToDate)/pToDate*100);
+    vs+='<div class="row"><div class="l">vs '+pName+' by day '+day+' (RM '+fmt(pToDate)+')</div>'+
+      '<b class="num '+(dl>0?'up':'dn')+'">'+(dl>0?'▲ +':'▼ ')+dl+'%</b></div>';
   }
-  var need=mo.filter(function(e){return e.need==='need';}).reduce(function(s,e){return s+e.amt;},0);
-  var want=tot-need;
+  if(pTot>0) vs+='<div class="row"><div class="l">'+pName+' full month</div><b class="num">RM '+fmt(pTot)+'</b></div>';
+
+  var byDay={}, maxD=0;
+  mo.forEach(function(e){var dd=+entryDay(e).slice(8);byDay[dd]=(byDay[dd]||0)+e.amt;});
+  for(var bk in byDay) if(byDay[bk]>maxD) maxD=byDay[bk];
+  var off=(new Date(now.getFullYear(),now.getMonth(),1).getDay()+6)%7, cells='';
+  for(var o=0;o<off;o++) cells+='<div style="background:transparent"></div>';
+  for(var dn=1;dn<=dim;dn++){
+    var v=byDay[dn]||0, st='';
+    if(v&&maxD){var a=0.15+0.65*v/maxD; st='background:rgba(207,111,134,'+a.toFixed(2)+')'+(v/maxD>0.55?';color:#fff':'');}
+    if(dn===day) st+=(st?';':'')+'box-shadow:inset 0 0 0 2px var(--lav)';
+    cells+='<div'+(st?' style="'+st+'"':'')+'>'+dn+'</div>';
+  }
+
+  var need=mo.filter(function(e){return e.need==='need';}).reduce(sum,0), want=tot-need;
+  var pNeed=pm.filter(function(e){return e.need==='need';}).reduce(sum,0);
+  var nPct=tot?Math.round(need/tot*100):0, pPct=pTot?Math.round(pNeed/pTot*100):null;
+
+  var avg={};
+  for(var mi=1;mi<=3;mi++){
+    var mk=ymKey(new Date(now.getFullYear(),now.getMonth()-mi,1));
+    entries.forEach(function(e){if(entryMonth(e)===mk)avg[e.cat]=(avg[e.cat]||0)+e.amt;});
+  }
+  for(var ck in avg) avg[ck]/=3;
+  var gc={}; mo.forEach(function(e){gc[e.cat]=(gc[e.cat]||0)+e.amt;});
+  var catRows=Object.keys(gc).sort(function(a,b){return gc[b]-gc[a];}).map(function(k){
+    var t='';
+    if(avg[k]>=20&&day>=5){ // projected month-end vs the 3-month average; too noisy before day 5
+      var dp=Math.round((gc[k]/day*dim-avg[k])/avg[k]*100);
+      if(dp>=20) t=' <span class="up">▲'+dp+'%</span>';
+      else if(dp<=-20) t=' <span class="dn">▼'+(-dp)+'%</span>';
+    }
+    return '<div class="row"><div class="l">'+esc(k)+t+'</div><b class="num">RM '+fmt(gc[k])+'</b></div>';
+  }).join('')||'<div class="mini">—</div>';
+  var gm={}; mo.forEach(function(e){gm[e.method]=(gm[e.method]||0)+e.amt;});
+  var mRows=Object.keys(gm).sort(function(a,b){return gm[b]-gm[a];}).map(function(k){
+    return '<div class="row"><div class="l">'+esc(k)+'</div><b class="num">RM '+fmt(gm[k])+'</b></div>';
+  }).join('')||'<div class="mini">—</div>';
+
   return '<h2>'+new Date(monthKey+'-01').toLocaleDateString('en-GB',{month:'long'})+
     ' <span>RM '+fmt(tot)+' · '+mo.length+' logs</span><button class="x" onclick="closeSheet()">✕</button></h2>'+
-    '<div class="row"><div class="l">🟢 Need (essential)</div><b class="num">RM '+fmt(need)+'</b></div>'+
+    pace+vs+
+    '<div class="bdh">Daily heat</div><div class="heat num">'+cells+'</div>'+
+    '<div class="row"><div class="l">🟢 Need (essential)'+(pPct!=null?'<small>'+nPct+'% of month · '+pName+' was '+pPct+'%</small>':'')+'</div><b class="num">RM '+fmt(need)+'</b></div>'+
     '<div class="row"><div class="l">🟠 Want (could cut)</div><b class="num">RM '+fmt(want)+'</b></div>'+
-    '<div class="bdh">By category</div>'+group('cat')+
-    '<div class="bdh">By account · check vs your statements</div>'+group('method')+
+    '<div class="bdh">By category · ▲▼ vs 3-month average</div>'+catRows+
+    '<div class="bdh">By account · check vs your statements</div>'+mRows+
     '<button class="copybtn" onclick="copyMonth()">Copy month summary</button>'+
     '<div class="mini">Paste the total into Wealth&nbsp;OS → Lifestyle Budget.</div>';
 }
@@ -489,6 +625,7 @@ window.openSheet=openSheet;window.closeSheet=closeSheet;window.undoLast=undoLast
 window.delEntry=delEntry;window.copyMonth=copyMonth;window.addCat=addCat;window.rmCat=rmCat;
 window.addMethod=addMethod;window.rmMethod=rmMethod;window.exportAll=exportAll;
 window.backupFile=backupFile;window.doImport=doImport;
+window.hideLast=hideLast;window.lastFlipNeed=lastFlipNeed;window.lastCycleMethod=lastCycleMethod;
 
 renderMethods();renderNeed();renderCats();renderKeys();renderQuick();renderAmt();renderTotals();
 </script>
