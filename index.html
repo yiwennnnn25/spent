@@ -90,6 +90,8 @@
   .sheet h2 span{color:var(--ink3);font-size:13px;font-weight:500}
   .x{color:var(--ink3);font-size:22px;border:0;background:none;cursor:pointer;line-height:1}
   .row{display:flex;justify-content:space-between;align-items:center;padding:11px 4px;border-bottom:1px solid var(--line);font-size:14px}
+  .row.rowc{cursor:pointer}
+  .row.rowc:active{background:var(--card2)}
   .row:last-child{border:0}
   .row .l{display:flex;align-items:center;gap:10px}
   .row .e{font-size:18px}
@@ -102,6 +104,9 @@
   .setrow input{flex:1;background:var(--card);border:1px solid var(--line);color:var(--ink);
     border-radius:10px;padding:10px;font-size:14px}
   .mini{font-size:11px;color:var(--ink3);text-align:center;margin-top:8px;line-height:1.6}
+  .nudge{margin:0 16px 7px;background:var(--want-bg);border:1px solid var(--line);border-radius:12px;
+    padding:9px 12px;font-size:12px;color:var(--ink);display:none;cursor:pointer;box-shadow:var(--shadow);text-align:center}
+  .nudge b{color:var(--want)}
   .last{position:fixed;left:50%;bottom:calc(78px + var(--pad));transform:translateX(-50%) translateY(16px);
     width:calc(100% - 28px);max-width:492px;background:var(--card);border:1px solid var(--line);
     border-radius:16px;padding:10px 12px;opacity:0;pointer-events:none;transition:.25s;z-index:40;
@@ -156,11 +161,13 @@
 
   <div class="keys" id="keys"></div>
 
+  <div class="nudge" id="nudge" onclick="backupFile()">🛟 It's been a while — <b>tap to save a backup file</b></div>
+
   <div class="foot">
     <button onclick="undoLast()">↩ Undo</button>
     <button onclick="openSheet('recent')">Recent</button>
     <button onclick="openSheet('break')">Insights</button>
-    <button onclick="openSheet('set')">⚙</button>
+    <button onclick="openSheet('set')">⚙<span id="cloud"></span></button>
   </div>
 
   <div class="sheet" id="sheet"><div id="sheetBody"></div></div>
@@ -178,13 +185,20 @@ var DEFAULT_METHODS = ['HLB','MB','TnG','Cash'];
 var KEY='xpense_entries_v1', CKEY='xpense_cfg_v6';
 function esc(s){return (s||'').replace(/[<>&"]/g,function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c];});}
 function load(k,f){try{var v=JSON.parse(localStorage.getItem(k));return v==null?f:v;}catch(e){return f;}}
-function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+function save(k,v,quiet){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){} if(!quiet)schedSync();}
 
 var entries = load(KEY, []);
 var cfg = load(CKEY, {cats:DEFAULT_CATS, methods:DEFAULT_METHODS, method:'TnG', need:'want', budget:0});
 if(!cfg.cats) cfg.cats = DEFAULT_CATS;
 if(!cfg.methods || !cfg.methods.length) cfg.methods = DEFAULT_METHODS;
 if(cfg.methods.indexOf(cfg.method)<0) cfg.method = cfg.methods[0];
+
+function genId(){return crypto.randomUUID?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2));}
+(function backfillIds(){ // older/imported entries may predate the id field
+  var added=false;
+  entries.forEach(function(e){ if(!e.id){ e.id=genId(); added=true; } });
+  if(added) save(KEY,entries,true);
+})();
 
 var amt = '';
 var monthKey = ymKey(new Date());
@@ -323,7 +337,7 @@ function logExpense(cat,el){
   var useM=(!manualSel.method&&d.method)?d.method:cfg.method;
   var useN=(!manualSel.need&&d.need)?d.need:cfg.need;
   var firstToday = !entries.some(function(x){return entryDay(x)===todayKey();});
-  var entry={amt:v, cat:cat.n, e:cat.e, method:useM, need:useN, note:note, ts:new Date().toISOString()};
+  var entry={id:genId(), amt:v, cat:cat.n, e:cat.e, method:useM, need:useN, note:note, ts:new Date().toISOString()};
   entries.push(entry);
   save(KEY,entries);
   if(useM!==cfg.method||useN!==cfg.need){cfg.method=useM;cfg.need=useN;save(CKEY,cfg);renderMethods();renderNeed();}
@@ -338,7 +352,7 @@ function quickLog(it){
   var d=catDefault(it.cat)||{};
   var useM=(!manualSel.method&&d.method)?d.method:cfg.method;
   var firstToday = !entries.some(function(x){return entryDay(x)===todayKey();});
-  var entry={amt:it.amt, cat:it.cat, e:it.e, method:useM, need:it.need, note:'', ts:new Date().toISOString()};
+  var entry={id:genId(), amt:it.amt, cat:it.cat, e:it.e, method:useM, need:it.need, note:'', ts:new Date().toISOString()};
   entries.push(entry);
   save(KEY,entries);
   if(useM!==cfg.method){cfg.method=useM;save(CKEY,cfg);renderMethods();}
@@ -401,9 +415,11 @@ function openSheet(kind){
   var body=document.getElementById('sheetBody');
   if(kind==='recent') body.innerHTML=recentHtml();
   else if(kind==='break') body.innerHTML=breakHtml();
+  else if(kind==='edit') body.innerHTML=editHtml(editId);
   else body.innerHTML=setHtml();
   document.getElementById('sheet').classList.add('open');
   if(kind==='set') wireSettings();
+  if(kind==='edit') wireEdit(editId);
 }
 function closeSheet(){document.getElementById('sheet').classList.remove('open');}
 document.getElementById('sheet').addEventListener('click',function(e){if(e.target.id==='sheet')closeSheet();});
@@ -411,16 +427,65 @@ document.getElementById('sheet').addEventListener('click',function(e){if(e.targe
 function recentHtml(){
   var list=entries.slice().reverse().slice(0,40);
   var rows=list.map(function(e){
-    var realIdx=entries.indexOf(e);
     var d=new Date(e.ts);
-    return '<div class="row"><div class="l"><span class="e">'+e.e+'</span><div>'+esc(e.cat)+(e.note?' · '+esc(e.note):'')+
+    return '<div class="row rowc" onclick="openEdit(\''+e.id+'\')"><div class="l"><span class="e">'+e.e+'</span><div>'+esc(e.cat)+(e.note?' · '+esc(e.note):'')+
       '<small>'+d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})+' '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})+
       ' · '+e.method+' · '+(e.need==='need'?'Need':'Want')+'</small></div></div>'+
-      '<div class="l"><b class="num">RM '+fmt(e.amt)+'</b><button class="del" onclick="delEntry('+realIdx+')">Delete</button></div></div>';
+      '<div class="l"><b class="num">RM '+fmt(e.amt)+'</b></div></div>';
   }).join('') || '<div class="mini">No expenses yet. Type an amount and tap a category.</div>';
-  return '<h2>Recent<button class="x" onclick="closeSheet()">✕</button></h2>'+rows;
+  return '<h2>Recent<button class="x" onclick="closeSheet()">✕</button></h2>'+rows+(list.length?'<div class="mini">Tap a row to edit.</div>':'');
 }
-function delEntry(i){ if(i>=0){entries.splice(i,1);save(KEY,entries);hideLast();renderTotals();renderQuick();openSheet('recent');} }
+function delEntry(id){
+  var i=entries.findIndex(function(e){return e.id===id;});
+  if(i>=0){entries.splice(i,1);save(KEY,entries);hideLast();renderTotals();renderQuick();openSheet('recent');}
+}
+
+var editId=null;
+function openEdit(id){ editId=id; openSheet('edit'); }
+function editHtml(id){
+  var e=entries.find(function(x){return x.id===id;});
+  if(!e) return '<h2>Edit<button class="x" onclick="closeSheet()">✕</button></h2><div class="mini">Entry not found.</div>';
+  var catOpts=cfg.cats.map(function(c){return '<option value="'+esc(c.n)+'"'+(c.n===e.cat?' selected':'')+'>'+c.e+' '+esc(c.n)+'</option>';}).join('');
+  var mOpts=cfg.methods.map(function(m){return '<option value="'+esc(m)+'"'+(m===e.method?' selected':'')+'>'+esc(m)+'</option>';}).join('');
+  return '<h2>Edit<button class="x" onclick="openSheet(\'recent\')">‹ Back</button></h2>'+
+    '<div class="bdh">Amount (RM)</div>'+
+    '<div class="setrow"><input id="edAmt" type="number" inputmode="decimal" value="'+e.amt+'"></div>'+
+    '<div class="bdh">Category</div>'+
+    '<div class="setrow"><select id="edCat" style="flex:1;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:14px;color:var(--ink)">'+catOpts+'</select></div>'+
+    '<div class="bdh">Account</div>'+
+    '<div class="setrow"><select id="edMethod" style="flex:1;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:14px;color:var(--ink)">'+mOpts+'</select></div>'+
+    '<div class="bdh">Need or want</div>'+
+    '<div class="seg need" id="edNeed"><button data-v="need" class="'+(e.need==='need'?'on':'')+'">Need</button><button data-v="want" class="'+(e.need==='want'?'on':'')+'">Want</button></div>'+
+    '<div class="bdh">Note</div>'+
+    '<div class="setrow"><input id="edNote" value="'+esc(e.note||'')+'" placeholder="note (optional)"></div>'+
+    '<button class="copybtn" onclick="saveEdit(\''+id+'\')">Save</button>'+
+    '<div class="setrow"><button class="copybtn" style="margin-top:0;background:var(--card2);color:var(--blush)" onclick="delEntry(\''+id+'\')">Delete entry</button></div>';
+}
+function wireEdit(id){
+  var seg=document.getElementById('edNeed');
+  if(seg) seg.addEventListener('click',function(ev){
+    if(!ev.target.dataset.v)return;
+    seg.querySelectorAll('button').forEach(function(b){b.classList.toggle('on',b===ev.target);});
+  });
+}
+function saveEdit(id){
+  var e=entries.find(function(x){return x.id===id;});
+  if(!e) return;
+  var v=parseFloat((document.getElementById('edAmt')||{}).value);
+  if(!(v>0)){ toast('Enter a valid amount'); return; }
+  var catName=(document.getElementById('edCat')||{}).value;
+  var cat=cfg.cats.find(function(c){return c.n===catName;});
+  e.amt=v;
+  if(cat){ e.cat=cat.n; e.e=cat.e; }
+  e.method=(document.getElementById('edMethod')||{}).value||e.method;
+  var needBtn=document.querySelector('#edNeed button.on');
+  e.need=needBtn?needBtn.dataset.v:e.need;
+  e.note=((document.getElementById('edNote')||{}).value||'').trim();
+  save(KEY,entries);
+  renderTotals();renderQuick();
+  toast('Saved');
+  openSheet('recent');
+}
 
 function breakHtml(){
   function sum(s,e){return s+e.amt;}
@@ -523,6 +588,15 @@ function setHtml(){
     '<div class="setrow"><button class="copybtn" style="margin-top:0" onclick="addMethod()">+ Add account</button></div>'+
     '<div class="bdh">Categories</div>'+catRows+
     '<div class="setrow"><button class="copybtn" style="margin-top:0" onclick="addCat()">+ Add category</button></div>'+
+    '<div class="bdh">Cloud sync (GitHub)</div>'+
+    (cfg.ghToken
+      ? '<div class="mini" style="text-align:left;margin:4px 0 0">☁️ '+syncStatus()+' · auto-backs up after every change</div>'+
+        '<div class="setrow"><button class="copybtn" style="margin-top:0" onclick="pullSync(true)">Sync now</button>'+
+        '<button class="copybtn" style="margin-top:0;background:var(--card2);color:var(--ink)" onclick="disconnectSync()">Disconnect</button></div>'
+      : '<div class="setrow"><input id="ghTok" type="password" placeholder="Paste GitHub token (gist scope)" autocomplete="off"></div>'+
+        '<div class="setrow"><input id="ghPass" type="password" placeholder="Passphrase (optional — encrypts cloud copy)" autocomplete="off"></div>'+
+        '<div class="setrow"><button class="copybtn" style="margin-top:0" onclick="connectSync()">Connect</button></div>'+
+        '<div class="mini" style="text-align:left">github.com → Settings → Developer settings → Personal access tokens (classic) → Generate, tick only <b>gist</b>. Data auto-backs up to a private Gist; paste the same token (and passphrase) on any device to restore. Keep both in your password manager / Notes — a lost passphrase makes the cloud copy unreadable.</div>')+
     '<div class="bdh">Data</div>'+
     '<div class="setrow"><button class="copybtn" style="margin-top:0;background:var(--card2);color:var(--ink)" onclick="exportAll()">Export all (CSV)</button></div>'+
     '<div class="setrow"><button class="copybtn" style="margin-top:0" onclick="backupFile()">Backup file</button>'+
@@ -565,7 +639,180 @@ function backupFile(){
   a.download='spend-backup-'+todayKey()+'.json';
   document.body.appendChild(a);a.click();
   setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},500);
+  cfg.lastBackup=Date.now();save(CKEY,cfg);
+  document.getElementById('nudge').style.display='none';
   toast('Backup saved');
+}
+
+/* ---- GitHub Gist cloud sync ---- */
+var GIST_FILE='spend-data.json';
+var syncT=null, syncing=false;
+function setCloud(st){
+  var el=document.getElementById('cloud');
+  el.textContent = st==='ok'?'☁️' : st==='pending'?'⏳' : st==='err'?'⚠️' : '';
+}
+function ghReq(method,url,body,cb){
+  fetch(url,{method:method,headers:{
+    'Authorization':'Bearer '+cfg.ghToken,
+    'Accept':'application/vnd.github+json',
+    'Content-Type':'application/json'
+  },body:body?JSON.stringify(body):undefined})
+  .then(function(r){if(!r.ok)throw new Error('GitHub '+r.status);return r.json();})
+  .then(function(j){cb(null,j);},function(e){cb(e);});
+}
+function syncPayload(){
+  var c={};for(var k in cfg){if(k!=='ghToken'&&k!=='gistId'&&k!=='syncPass')c[k]=cfg[k];}
+  return JSON.stringify({v:1,savedAt:new Date().toISOString(),entries:entries,cfg:c});
+}
+/* passphrase encryption: AES-GCM, key from PBKDF2(passphrase) */
+function b64(buf){var s='';new Uint8Array(buf).forEach(function(x){s+=String.fromCharCode(x);});return btoa(s);}
+function unb64(s){var bin=atob(s),a=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)a[i]=bin.charCodeAt(i);return a;}
+function deriveKey(pass,salt){
+  return crypto.subtle.importKey('raw',new TextEncoder().encode(pass),'PBKDF2',false,['deriveKey'])
+    .then(function(km){return crypto.subtle.deriveKey(
+      {name:'PBKDF2',salt:salt,iterations:150000,hash:'SHA-256'},km,
+      {name:'AES-GCM',length:256},false,['encrypt','decrypt']);});
+}
+function encryptPayload(txt,pass){
+  var salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
+  return deriveKey(pass,salt).then(function(key){
+    return crypto.subtle.encrypt({name:'AES-GCM',iv:iv},key,new TextEncoder().encode(txt));
+  }).then(function(ct){
+    return JSON.stringify({v:2,enc:true,salt:b64(salt),iv:b64(iv),data:b64(ct)});
+  });
+}
+function decryptPayload(obj,pass){
+  return deriveKey(pass,unb64(obj.salt)).then(function(key){
+    return crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(obj.iv)},key,unb64(obj.data));
+  }).then(function(pt){return new TextDecoder().decode(pt);});
+}
+function buildPayload(cb,interactive){
+  var txt=syncPayload();
+  if(cfg.syncPass)encryptPayload(txt,cfg.syncPass).then(cb,function(){syncing=false;syncFail(new Error('encrypt'),interactive);});
+  else cb(txt);
+}
+function syncFail(err,interactive){
+  if(/401|403/.test(err&&err.message)){ // dead token: forget it so Settings shows the paste field again
+    cfg.ghToken='';save(CKEY,cfg,true);setCloud('');
+    toast('Token rejected — paste a new one in ⚙');
+  } else {
+    setCloud('err');
+    if(interactive)toast('Sync failed — offline?');
+  }
+}
+function schedSync(){
+  if(!cfg.ghToken)return;
+  clearTimeout(syncT);setCloud('pending');
+  syncT=setTimeout(function(){pushSync();},1800);
+}
+function pushSync(interactive){
+  if(!cfg.ghToken||syncing)return;syncing=true;
+  buildPayload(function(content){
+    var files={};files[GIST_FILE]={content:content};
+    function done(err,j){
+      syncing=false;
+      if(err){syncFail(err,interactive);return;}
+      if(j&&j.id&&cfg.gistId!==j.id){cfg.gistId=j.id;}
+      cfg.lastSync=Date.now();save(CKEY,cfg,true);setCloud('ok');
+      if(interactive)toast('Backed up to cloud ☁️');
+    }
+    if(cfg.gistId){
+      ghReq('PATCH','https://api.github.com/gists/'+cfg.gistId,{files:files},function(err,j){
+        if(err&&/404/.test(err.message)){cfg.gistId='';syncing=false;pushSync(interactive);}
+        else done(err,j);
+      });
+    } else {
+      ghReq('POST','https://api.github.com/gists',
+        {description:'Spend tracker sync (auto-backup)',public:false,files:files},done);
+    }
+  },interactive);
+}
+function pullSync(interactive){
+  if(!cfg.ghToken)return;
+  setCloud('pending');
+  if(cfg.gistId)fetchGist(interactive);else findGist(interactive);
+}
+function findGist(interactive){
+  ghReq('GET','https://api.github.com/gists?per_page=100',null,function(err,list){
+    if(err){syncFail(err,interactive);return;}
+    var g=null;
+    (list||[]).some(function(x){if(x.files&&x.files[GIST_FILE]){g=x;return true;}return false;});
+    if(g){cfg.gistId=g.id;save(CKEY,cfg,true);fetchGist(interactive);}
+    else pushSync(interactive); // nothing in the cloud yet: first upload
+  });
+}
+function fetchGist(interactive){
+  ghReq('GET','https://api.github.com/gists/'+cfg.gistId,null,function(err,j){
+    if(err){
+      if(/404/.test(err.message)){cfg.gistId='';save(CKEY,cfg,true);findGist(interactive);}
+      else syncFail(err,interactive);
+      return;
+    }
+    var f=j.files&&j.files[GIST_FILE];
+    if(!f){pushSync(interactive);return;}
+    if(f.truncated)fetch(f.raw_url).then(function(r){return r.text();})
+      .then(function(t){mergeRemote(t,interactive);},function(e){syncFail(e,interactive);});
+    else mergeRemote(f.content,interactive);
+  });
+}
+function mergeRemote(txt,interactive){
+  var data=null;try{data=JSON.parse(txt);}catch(e){}
+  if(data&&data.enc){
+    if(!cfg.syncPass){setCloud('err');toast('Cloud copy is encrypted — connect with your passphrase');return;}
+    decryptPayload(data,cfg.syncPass).then(function(pt){
+      var d=null;try{d=JSON.parse(pt);}catch(e){}
+      applyRemote(d,interactive);
+    },function(){ // wrong passphrase: reset so Settings shows the connect fields again
+      cfg.ghToken='';cfg.syncPass='';cfg.gistId='';save(CKEY,cfg,true);
+      setCloud('');toast('Wrong passphrase — nothing restored, reconnect in ⚙');
+    });
+    return;
+  }
+  applyRemote(data,interactive);
+}
+function applyRemote(data,interactive){
+  if(!data||!data.entries){pushSync(interactive);return;}
+  var localEmpty=entries.length===0;
+  var seen={};entries.forEach(function(e){seen[e.ts+'|'+parseFloat(e.amt)]=1;});
+  var added=0;
+  data.entries.forEach(function(e){
+    if(!e||!e.ts||!(parseFloat(e.amt)>0))return;
+    var k=e.ts+'|'+parseFloat(e.amt);if(seen[k])return;seen[k]=1;
+    if(!e.id)e.id=genId();
+    entries.push(e);added++;
+  });
+  if(added){entries.sort(function(a,b){return a.ts<b.ts?-1:1;});save(KEY,entries,true);}
+  if(localEmpty&&data.cfg&&data.cfg.cats&&data.cfg.methods){
+    var tok=cfg.ghToken,gid=cfg.gistId,pw=cfg.syncPass;
+    cfg=data.cfg;cfg.ghToken=tok;cfg.gistId=gid;cfg.syncPass=pw;
+    if(cfg.methods.indexOf(cfg.method)<0)cfg.method=cfg.methods[0];
+    save(CKEY,cfg,true);
+    renderMethods();renderNeed();renderCats();
+  }
+  renderTotals();renderQuick();
+  if(interactive)toast(added?('☁️ Restored '+added+' entr'+(added===1?'y':'ies')):'☁️ Connected — up to date');
+  pushSync(); // push the merged state back up
+}
+function connectSync(){
+  var inp=document.getElementById('ghTok');
+  var tok=(inp&&inp.value||'').trim();
+  if(tok.length<20){toast('Paste a GitHub token first');return;}
+  var pass=((document.getElementById('ghPass')||{}).value||'').trim();
+  if(pass&&!(window.crypto&&crypto.subtle&&window.TextEncoder)){toast('Encryption needs https — open the GitHub Pages URL');return;}
+  cfg.ghToken=tok;cfg.syncPass=pass;cfg.gistId='';save(CKEY,cfg,true);
+  document.getElementById('nudge').style.display='none';
+  closeSheet();
+  pullSync(true);
+}
+function disconnectSync(){
+  cfg.ghToken='';cfg.gistId='';cfg.syncPass='';save(CKEY,cfg,true);
+  setCloud('');openSheet('set');toast('Cloud sync off');
+}
+function syncStatus(){
+  var lock=cfg.syncPass?' · 🔒 encrypted':'';
+  if(!cfg.lastSync)return 'Connected — first sync pending'+lock;
+  var m=Math.round((Date.now()-cfg.lastSync)/60000);
+  return 'Last synced '+(m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago')+lock;
 }
 function csvFields(line){
   var f=[],cur='',q=false;
@@ -606,7 +853,7 @@ function doImport(txt){
     var v=parseFloat(e.amt), ts=e.ts;
     if(!ts||isNaN(new Date(ts).getTime())||!(v>0))return;
     var k=ts+'|'+v; if(seen[k])return; seen[k]=1;
-    entries.push({amt:v,cat:e.cat||'Other',e:e.e||catE[e.cat]||'📌',method:e.method||'',
+    entries.push({id:genId(),amt:v,cat:e.cat||'Other',e:e.e||catE[e.cat]||'📌',method:e.method||'',
       need:e.need==='need'?'need':'want',note:e.note||'',ts:ts});
     added++;
   });
@@ -625,9 +872,18 @@ window.openSheet=openSheet;window.closeSheet=closeSheet;window.undoLast=undoLast
 window.delEntry=delEntry;window.copyMonth=copyMonth;window.addCat=addCat;window.rmCat=rmCat;
 window.addMethod=addMethod;window.rmMethod=rmMethod;window.exportAll=exportAll;
 window.backupFile=backupFile;window.doImport=doImport;
+window.connectSync=connectSync;window.disconnectSync=disconnectSync;window.pullSync=pullSync;
 window.hideLast=hideLast;window.lastFlipNeed=lastFlipNeed;window.lastCycleMethod=lastCycleMethod;
+window.openEdit=openEdit;window.saveEdit=saveEdit;
 
 renderMethods();renderNeed();renderCats();renderKeys();renderQuick();renderAmt();renderTotals();
+
+// ask the browser not to evict our storage under pressure (iOS ignores, Chrome honors)
+if(navigator.storage && navigator.storage.persist) navigator.storage.persist();
+// backup nudge: worth protecting + no backup in 7 days + no cloud sync covering us
+if(!cfg.ghToken && entries.length>=10 && (!cfg.lastBackup || Date.now()-cfg.lastBackup>7*864e5))
+  document.getElementById('nudge').style.display='block';
+if(cfg.ghToken){ setCloud('ok'); if(!entries.length) pullSync(); }
 </script>
 </body>
 </html>
