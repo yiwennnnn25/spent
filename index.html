@@ -173,6 +173,7 @@
     <button onclick="undoLast()">↩ Undo</button>
     <button onclick="openSheet('recent')">Recent</button>
     <button onclick="openSheet('break')">Insights</button>
+    <button onclick="openSheet('makan')">🍜 Makan</button>
     <button onclick="openSheet('set')">⚙<span id="cloud"></span></button>
   </div>
 
@@ -182,7 +183,7 @@
 
 <script>
 "use strict";
-var APP_VERSION='2026-07-08a'; /*APPVER:2026-07-08a*/
+var APP_VERSION='2026-07-13a'; /*APPVER:2026-07-13a*/
 var DEFAULT_CATS = [
   {e:'🍽️',n:'Eating Out'},{e:'🛒',n:'Groceries'},{e:'🛍️',n:'Shopping'},
   {e:'📦',n:'Online'},{e:'🐾',n:'Gomi'},{e:'📌',n:'Other'},
@@ -195,6 +196,8 @@ function load(k,f){try{var v=JSON.parse(localStorage.getItem(k));return v==null?
 function save(k,v,quiet){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){} if(!quiet)schedSync();}
 
 var entries = load(KEY, []);
+var MAKAN_KEY='xpense_makan_v1';
+var makanEntries = load(MAKAN_KEY, []);
 var cfg = load(CKEY, {cats:DEFAULT_CATS, methods:DEFAULT_METHODS, method:'TnG', need:'want', budget:0});
 if(!cfg.cats) cfg.cats = DEFAULT_CATS;
 if(!cfg.methods || !cfg.methods.length) cfg.methods = DEFAULT_METHODS;
@@ -425,12 +428,14 @@ function openSheet(kind){
   else if(kind==='break') body.innerHTML=breakHtml();
   else if(kind==='day') body.innerHTML=dayHtml(dayKey);
   else if(kind==='edit') body.innerHTML=editHtml(editId);
+  else if(kind==='makan') body.innerHTML=makanHtml();
   else body.innerHTML=setHtml();
   currentSheet=kind;
   document.getElementById('sheet').classList.add('open');
   body.scrollTop=0;
   if(kind==='set') wireSettings();
   if(kind==='edit') wireEdit(editId);
+  if(kind==='makan') wireMakan();
 }
 function closeSheet(){document.getElementById('sheet').classList.remove('open');}
 document.getElementById('sheet').addEventListener('click',function(e){if(e.target.id==='sheet')closeSheet();});
@@ -537,6 +542,96 @@ function saveEdit(id){
   renderTotals();renderQuick();
   toast('Saved');
   openSheet(editBack);
+}
+
+/* ---- Makan quick-log: a 10-second food log, separate from the spend
+   keypad flow. Writes to its own local key and its own gist file, so it
+   never touches spend-data.json or the spend entries/cfg sync path. ---- */
+function makanHtml(){
+  var recent=makanEntries.slice().reverse().slice(0,5).map(function(m){
+    var d=new Date(m.ts);
+    return '<div class="row"><div class="l"><span class="e">🍜</span><div>'+esc(m.place)+(m.dish?' · '+esc(m.dish):'')+
+      '<small>'+d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})+' '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})+
+      (m.verdict?' · '+(m.verdict==='return'?'👍 Return':'😐 Meh'):'')+(m.paid===false?' · someone else paid':'')+
+      '</small></div></div></div>';
+  }).join('') || '<div class="mini">No meals logged yet.</div>';
+  return '<h2>Makan log<button class="x" onclick="closeSheet()">✕</button></h2>'+
+    '<div class="bdh">Place</div>'+
+    '<div class="setrow"><input id="mkPlace" placeholder="e.g. Ho Weng Kee" autocomplete="off"></div>'+
+    '<div class="bdh">Dish (optional)</div>'+
+    '<div class="setrow"><input id="mkDish" placeholder="e.g. char kway teow" autocomplete="off"></div>'+
+    '<div class="bdh">Would you return?</div>'+
+    '<div class="seg" id="mkVerdict"><button data-v="">Skip</button><button data-v="return">Return</button><button data-v="meh">Meh</button></div>'+
+    '<div class="bdh">Paid by me</div>'+
+    '<div class="seg" id="mkPaid"><button data-v="1" class="on">Yes</button><button data-v="0">No</button></div>'+
+    '<div class="bdh">Note (optional)</div>'+
+    '<div class="setrow"><input id="mkNote" placeholder="note" autocomplete="off"></div>'+
+    '<button class="copybtn" onclick="logMakan()">Log meal</button>'+
+    '<div class="bdh">Recent</div>'+recent;
+}
+function wireMakan(){
+  var vSeg=document.getElementById('mkVerdict');
+  if(vSeg) vSeg.addEventListener('click',function(ev){
+    if(ev.target.dataset.v===undefined)return;
+    vSeg.querySelectorAll('button').forEach(function(b){b.classList.toggle('on',b===ev.target);});
+  });
+  var pSeg=document.getElementById('mkPaid');
+  if(pSeg) pSeg.addEventListener('click',function(ev){
+    if(ev.target.dataset.v===undefined)return;
+    pSeg.querySelectorAll('button').forEach(function(b){b.classList.toggle('on',b===ev.target);});
+  });
+}
+function logMakan(){
+  var place=((document.getElementById('mkPlace')||{}).value||'').trim();
+  if(!place){toast('Enter a place first');return;}
+  var dish=((document.getElementById('mkDish')||{}).value||'').trim();
+  var vBtn=document.querySelector('#mkVerdict button.on');
+  var verdict=(vBtn&&vBtn.dataset.v)?vBtn.dataset.v:null;
+  var pBtn=document.querySelector('#mkPaid button.on');
+  var paid=pBtn?pBtn.dataset.v==='1':true;
+  var note=((document.getElementById('mkNote')||{}).value||'').trim();
+  var entry={ts:new Date().toISOString(),place:place};
+  if(dish)entry.dish=dish;
+  if(verdict)entry.verdict=verdict;
+  entry.paid=paid;
+  if(note)entry.note=note;
+  makanEntries.push(entry);
+  save(MAKAN_KEY,makanEntries,true);
+  schedMakanSync();
+  toast('Logged '+place);
+  closeSheet();
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(function(pos){
+      entry.geo=[+pos.coords.latitude.toFixed(5),+pos.coords.longitude.toFixed(5)];
+      save(MAKAN_KEY,makanEntries,true);
+      schedMakanSync();
+    },function(){},{timeout:4000,maximumAge:300000});
+  }
+}
+/* rides the same gist/token/passphrase as the spend sync above (ghReq,
+   encryptPayload, cfg.ghToken/gistId/syncPass) but only once that gist
+   already exists — a Makan-only device never creates its own gist, it
+   always joins the Spend gist. */
+var makanSyncT=null, makanSyncing=false;
+function schedMakanSync(){
+  if(!cfg.ghToken||!cfg.gistId)return;
+  clearTimeout(makanSyncT);setCloud('pending');
+  makanSyncT=setTimeout(function(){pushMakanSync();},1800);
+}
+function pushMakanSync(interactive){
+  if(!cfg.ghToken||!cfg.gistId||makanSyncing)return;makanSyncing=true;
+  var txt=JSON.stringify({entries:makanEntries});
+  function send(content){
+    var files={};files[MAKAN_FILE]={content:content};
+    ghReq('PATCH','https://api.github.com/gists/'+cfg.gistId,{files:files},function(err){
+      makanSyncing=false;
+      if(err){syncFail(err,interactive);return;}
+      setCloud('ok');
+      if(interactive)toast('Makan log synced ☁️');
+    });
+  }
+  if(cfg.syncPass)encryptPayload(txt,cfg.syncPass).then(send,function(){makanSyncing=false;syncFail(new Error('encrypt'),interactive);});
+  else send(txt);
 }
 
 function breakHtml(){
@@ -699,6 +794,7 @@ function backupFile(){
 
 /* ---- GitHub Gist cloud sync ---- */
 var GIST_FILE='spend-data.json';
+var MAKAN_FILE='makan-data.json';
 var syncT=null, syncing=false;
 function setCloud(st){
   var el=document.getElementById('cloud');
@@ -928,6 +1024,7 @@ window.backupFile=backupFile;window.doImport=doImport;
 window.connectSync=connectSync;window.disconnectSync=disconnectSync;window.pullSync=pullSync;
 window.hideLast=hideLast;window.lastFlipNeed=lastFlipNeed;window.lastCycleMethod=lastCycleMethod;
 window.openEdit=openEdit;window.saveEdit=saveEdit;window.openDay=openDay;
+window.logMakan=logMakan;
 
 // Home-Screen web apps cache the HTML hard and won't show a new deploy on their
 // own. On each load (when online) fetch the live copy bypassing cache, and if its
